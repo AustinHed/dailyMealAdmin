@@ -26,6 +26,7 @@ type EditableIngredientRow = {
   usdaFdcId: string;
   aliasesText: string;
   conversionText: string;
+  category: string;
 };
 
 type UpdatePayload = {
@@ -100,8 +101,14 @@ export function BaseIngredientsEditor({
       usdaFdcId: ingredient.usdaFdcId,
       aliasesText: ingredient.aliases.join(", "),
       conversionText: prettyJson(ingredient.conversion),
+      category: ingredient.category,
     })),
   );
+  const [showFilters, setShowFilters] = useState(false);
+  const [fdcIdStatusFilter, setFdcIdStatusFilter] = useState<
+    "all" | "hasFdcId" | "missingFdcId"
+  >("all");
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
 
   const initialLookup = useMemo(() => {
     const lookup = new Map<
@@ -167,6 +174,37 @@ export function BaseIngredientsEditor({
     return { updates, errors };
   }, [initialLookup, rows]);
 
+  const allCategories = useMemo(() => {
+    return Array.from(
+      new Set(
+        rows
+          .map((row) => row.category.trim())
+          .filter(Boolean),
+      ),
+    ).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    return rows.filter((row) => {
+      const hasFdcId = row.usdaFdcId.trim().length > 0;
+      const normalizedCategory = row.category.trim();
+
+      if (fdcIdStatusFilter === "hasFdcId" && !hasFdcId) {
+        return false;
+      }
+
+      if (fdcIdStatusFilter === "missingFdcId" && hasFdcId) {
+        return false;
+      }
+
+      if (selectedCategories.length > 0 && !selectedCategories.includes(normalizedCategory)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [fdcIdStatusFilter, rows, selectedCategories]);
+
   return (
     <form
       action={formAction}
@@ -183,22 +221,107 @@ export function BaseIngredientsEditor({
     >
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <p className="text-sm text-slate-700">
-          Total ingredients: <span className="font-semibold">{rows.length}</span> | Pending changes:{" "}
+          Showing: <span className="font-semibold">{filteredRows.length}</span> of{" "}
+          <span className="font-semibold">{rows.length}</span> | Pending changes:{" "}
           <span className="font-semibold">{computed.updates.length}</span>
         </p>
 
-        <button
-          type="submit"
-          disabled={isPending || computed.updates.length === 0}
-          className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <Save className="h-4 w-4" />
-          {isPending ? "Saving..." : "Save Ingredient Changes"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowFilters((current) => !current)}
+            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            {showFilters ? "Hide Filters" : "Show Filters"}
+          </button>
+          <button
+            type="submit"
+            disabled={isPending || computed.updates.length === 0}
+            className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Save className="h-4 w-4" />
+            {isPending ? "Saving..." : "Save Ingredient Changes"}
+          </button>
+        </div>
       </div>
 
+      {showFilters ? (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="flex flex-col gap-1 text-xs font-medium text-slate-700">
+              FDCID status
+              <select
+                value={fdcIdStatusFilter}
+                onChange={(event) =>
+                  setFdcIdStatusFilter(
+                    event.target.value as "all" | "hasFdcId" | "missingFdcId",
+                  )
+                }
+                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-slate-200 focus:ring"
+              >
+                <option value="all">All ingredients</option>
+                <option value="hasFdcId">Has FDCID</option>
+                <option value="missingFdcId">Missing FDCID</option>
+              </select>
+            </label>
+
+            <div className="flex flex-col gap-2 text-xs font-medium text-slate-700">
+              <span>Ingredient category</span>
+              <div className="flex flex-wrap gap-2">
+                {allCategories.length === 0 ? (
+                  <p className="text-xs text-slate-500">No categories found.</p>
+                ) : (
+                  allCategories.map((category) => {
+                    const active = selectedCategories.includes(category);
+                    return (
+                      <button
+                        key={category}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCategories((current) =>
+                            current.includes(category)
+                              ? current.filter((item) => item !== category)
+                              : [...current, category],
+                          );
+                        }}
+                        className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                          active
+                            ? "border-slate-900 bg-slate-900 text-white"
+                            : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        {category}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => {
+                setFdcIdStatusFilter("all");
+                setSelectedCategories([]);
+              }}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Clear filters
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="space-y-3">
-        {rows.map((row, index) => (
+        {filteredRows.map((row) => {
+          const index = rows.findIndex((item) => item.ingredientId === row.ingredientId);
+          if (index < 0) {
+            return null;
+          }
+
+          return (
           <div key={row.ingredientId} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 grid gap-3 lg:grid-cols-4">
               <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
@@ -247,6 +370,10 @@ export function BaseIngredientsEditor({
               </label>
             </div>
 
+            <p className="mb-3 text-xs text-slate-600">
+              Category: <span className="font-medium text-slate-800">{row.category || "Uncategorized"}</span>
+            </p>
+
             <label className="mb-3 flex flex-col gap-1 text-xs font-medium text-slate-700">
               Aliases (comma-separated)
               <input
@@ -290,7 +417,14 @@ export function BaseIngredientsEditor({
               <p className="mt-2 text-xs font-medium text-red-600">{computed.errors[row.ingredientId]}</p>
             ) : null}
           </div>
-        ))}
+          );
+        })}
+
+        {filteredRows.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600">
+            No ingredients match the selected filters.
+          </div>
+        ) : null}
       </div>
 
       <input type="hidden" name="updatesJson" value={JSON.stringify(computed.updates)} />
