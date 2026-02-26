@@ -136,6 +136,8 @@ export default async function IngredientsEditorPage({
       </div>
 
       <RecipeEditorForm
+        key={recipe.id}
+        recipeId={recipe.id}
         recipe={recipe}
         saveRecipeAction={saveIngredientsAction}
         mode="ingredients"

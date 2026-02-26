@@ -211,7 +211,13 @@ export default async function RecipeDetailPage({
         </div>
       </div>
 
-      <RecipeEditorForm recipe={recipe} saveRecipeAction={saveRecipeAction} mode="full" />
+      <RecipeEditorForm
+        key={recipe.id}
+        recipeId={recipe.id}
+        recipe={recipe}
+        saveRecipeAction={saveRecipeAction}
+        mode="full"
+      />
     </main>
   );
 }

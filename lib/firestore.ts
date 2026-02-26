@@ -9,6 +9,14 @@ export type RecipeInstruction = {
   tip: string;
 };
 
+export type MacroNutrition = {
+  calories: number | null;
+  protein: number | null;
+  fat: number | null;
+  carbs: number | null;
+  per: string;
+};
+
 export type RecipeIngredient = {
   name: string;
   amount: string;
@@ -38,7 +46,10 @@ export type Recipe = {
 export type RecipeListItem = Pick<
   Recipe,
   "id" | "title" | "cuisine" | "servings" | "prepTimeMinutes"
->;
+> & {
+  createdAtMs: number | null;
+  nutrition: MacroNutrition;
+};
 
 export type BaseIngredient = {
   ingredientId: string;
@@ -47,6 +58,8 @@ export type BaseIngredient = {
   aliases: string[];
   conversion: Record<string, unknown>;
   category: string;
+  createdAtMs: number | null;
+  nutritionPer100g: MacroNutrition;
 };
 
 export type BaseIngredientUpdateInput = {
@@ -103,6 +116,89 @@ function toFdcIdString(value: unknown): string {
   }
 
   return "";
+}
+
+function toTimestampMillis(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value > 1_000_000_000_000) {
+      return Math.trunc(value);
+    }
+
+    if (value > 1_000_000_000) {
+      return Math.trunc(value * 1000);
+    }
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  if (typeof value === "object" && value !== null) {
+    const timestampLike = value as {
+      toMillis?: () => number;
+      seconds?: unknown;
+      _seconds?: unknown;
+    };
+
+    if (typeof timestampLike.toMillis === "function") {
+      const millis = timestampLike.toMillis();
+      return Number.isFinite(millis) ? Math.trunc(millis) : null;
+    }
+
+    if (typeof timestampLike.seconds === "number" && Number.isFinite(timestampLike.seconds)) {
+      return Math.trunc(timestampLike.seconds * 1000);
+    }
+
+    if (typeof timestampLike._seconds === "number" && Number.isFinite(timestampLike._seconds)) {
+      return Math.trunc(timestampLike._seconds * 1000);
+    }
+  }
+
+  return null;
+}
+
+function firstPresentNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = toNullableNumber(value);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function normalizeMacroNutrition(
+  value: unknown,
+  perFallback: string,
+): MacroNutrition {
+  const nutrition = toRecord(value);
+
+  return {
+    calories: firstPresentNumber(
+      nutrition.calories,
+      nutrition.kcal,
+      nutrition.calorie,
+      nutrition.energyKcal,
+    ),
+    protein: firstPresentNumber(
+      nutrition.protein,
+      nutrition.proteinGrams,
+      nutrition.protein_g,
+      nutrition.proteinG,
+    ),
+    fat: firstPresentNumber(nutrition.fat, nutrition.fatGrams, nutrition.fat_g, nutrition.fatG),
+    carbs: firstPresentNumber(
+      nutrition.carbs,
+      nutrition.carbsGrams,
+      nutrition.carbohydrates,
+      nutrition.totalCarbohydrate,
+      nutrition.carbs_g,
+      nutrition.carbsG,
+    ),
+    per: toString(nutrition.per) || perFallback,
+  };
 }
 
 function toInstructions(value: unknown): RecipeInstruction[] {
@@ -191,6 +287,10 @@ function normalizeRecipe(id: string, data: Record<string, unknown>): Recipe {
 
 function normalizeBaseIngredient(id: string, data: Record<string, unknown>): BaseIngredient {
   const ingredientId = toString(data.ingredientId) || id;
+  const nutritionPer100g = normalizeMacroNutrition(
+    data.nutrition || data.nutritionPer100g || data.macrosPer100g,
+    "100g",
+  );
 
   return {
     ingredientId,
@@ -204,6 +304,12 @@ function normalizeBaseIngredient(id: string, data: Record<string, unknown>): Bas
     aliases: toStringArray(data.aliases),
     conversion: toRecord(data.conversion),
     category: toString(data.category),
+    createdAtMs:
+      toTimestampMillis(data.createdAt) ||
+      toTimestampMillis(data.created_at) ||
+      toTimestampMillis(data.addedAt) ||
+      toTimestampMillis(data.added_at),
+    nutritionPer100g,
   };
 }
 
@@ -298,14 +404,29 @@ export async function getAllRecipes(): Promise<RecipeListItem[]> {
   const snapshot = await getAdminDb().collection("recipes").get();
 
   return snapshot.docs
-    .map((doc) => normalizeRecipe(doc.id, doc.data()))
-    .map((recipe) => ({
-      id: recipe.id,
-      title: recipe.title,
-      cuisine: recipe.cuisine,
-      servings: recipe.servings,
-      prepTimeMinutes: recipe.prepTimeMinutes,
-    }))
+    .map((doc) => {
+      const data = doc.data();
+      const recipe = normalizeRecipe(doc.id, data);
+
+      return {
+        id: recipe.id,
+        title: recipe.title,
+        cuisine: recipe.cuisine,
+        servings: recipe.servings,
+        prepTimeMinutes: recipe.prepTimeMinutes,
+        createdAtMs:
+          toTimestampMillis(data.createdAt) ||
+          toTimestampMillis(data.created_at) ||
+          toTimestampMillis(data.addedAt) ||
+          toTimestampMillis(data.added_at) ||
+          toTimestampMillis(doc.createTime) ||
+          toTimestampMillis(doc.updateTime),
+        nutrition: normalizeMacroNutrition(
+          data.nutrition || data.nutritionPerServing || data.macros,
+          "serving",
+        ),
+      };
+    })
     .sort((a, b) => a.title.localeCompare(b.title));
 }
 
@@ -313,7 +434,16 @@ export async function getAllBaseIngredients(): Promise<BaseIngredient[]> {
   const snapshot = await getAdminDb().collection("ingredients").get();
 
   return snapshot.docs
-    .map((doc) => normalizeBaseIngredient(doc.id, doc.data()))
+    .map((doc) => {
+      const ingredient = normalizeBaseIngredient(doc.id, doc.data());
+      return {
+        ...ingredient,
+        createdAtMs:
+          ingredient.createdAtMs ||
+          toTimestampMillis(doc.createTime) ||
+          toTimestampMillis(doc.updateTime),
+      };
+    })
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 

@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { RecipeCard } from "@/components/RecipeCard";
+import { RecipesTable } from "@/components/RecipesTable";
 import { getAllRecipes } from "@/lib/firestore";
 
 export const dynamic = "force-dynamic";
@@ -31,37 +31,7 @@ export default async function RecipesPage() {
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <table className="w-full border-collapse">
-          <thead className="bg-slate-100">
-            <tr>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Title
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Cuisine
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Servings
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Prep Time
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {recipes.length === 0 ? (
-              <tr>
-                <td className="px-4 py-6 text-sm text-slate-500" colSpan={4}>
-                  No recipes found in Firestore.
-                </td>
-              </tr>
-            ) : (
-              recipes.map((recipe) => <RecipeCard key={recipe.id} recipe={recipe} />)
-            )}
-          </tbody>
-        </table>
-      </div>
+      <RecipesTable recipes={recipes} />
     </main>
   );
 }

@@ -4,6 +4,7 @@ import { useActionState, useMemo, useState } from "react";
 import { Save } from "lucide-react";
 
 import type { BaseIngredient } from "@/lib/firestore";
+import { readLocalIdList, writeLocalIdList } from "@/lib/local-id-storage";
 
 export type SaveBaseIngredientsState = {
   status: "idle" | "success" | "error";
@@ -27,6 +28,8 @@ type EditableIngredientRow = {
   aliasesText: string;
   conversionText: string;
   category: string;
+  createdAtMs: number | null;
+  nutritionPer100g: BaseIngredient["nutritionPer100g"];
 };
 
 type UpdatePayload = {
@@ -41,6 +44,10 @@ type ComputeResult = {
   updates: UpdatePayload[];
   errors: Record<string, string>;
 };
+
+type IngredientSortMode = "name" | "recent";
+
+const CLEANED_INGREDIENTS_STORAGE_KEY = "dailymeal.cleanedIngredients";
 
 function normalizeAliasesInput(value: string): string[] {
   return Array.from(
@@ -79,6 +86,26 @@ function safeParseObjectJson(text: string): {
   }
 }
 
+function formatDate(value: number | null): string {
+  if (!value) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(value));
+}
+
+function formatMacro(value: number | null): string {
+  if (value === null) {
+    return "-";
+  }
+
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
 export function BaseIngredientsEditor({
   ingredients,
   saveBaseIngredientsAction,
@@ -93,6 +120,7 @@ export function BaseIngredientsEditor({
     FormData
   >(saveBaseIngredientsAction, initialState);
   const [clientError, setClientError] = useState("");
+  const [sortMode, setSortMode] = useState<IngredientSortMode>("recent");
 
   const [rows, setRows] = useState<EditableIngredientRow[]>(() =>
     ingredients.map((ingredient) => ({
@@ -102,6 +130,8 @@ export function BaseIngredientsEditor({
       aliasesText: ingredient.aliases.join(", "),
       conversionText: prettyJson(ingredient.conversion),
       category: ingredient.category,
+      createdAtMs: ingredient.createdAtMs,
+      nutritionPer100g: ingredient.nutritionPer100g,
     })),
   );
   const [showFilters, setShowFilters] = useState(false);
@@ -109,6 +139,9 @@ export function BaseIngredientsEditor({
     "all" | "hasFdcId" | "missingFdcId"
   >("all");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [cleanedIngredientIds, setCleanedIngredientIds] = useState<string[]>(() =>
+    readLocalIdList(CLEANED_INGREDIENTS_STORAGE_KEY),
+  );
 
   const initialLookup = useMemo(() => {
     const lookup = new Map<
@@ -205,6 +238,40 @@ export function BaseIngredientsEditor({
     });
   }, [fdcIdStatusFilter, rows, selectedCategories]);
 
+  const visibleRows = useMemo(() => {
+    const nextRows = [...filteredRows];
+
+    if (sortMode === "recent") {
+      nextRows.sort((a, b) => {
+        const aCreatedAt = a.createdAtMs ?? Number.NEGATIVE_INFINITY;
+        const bCreatedAt = b.createdAtMs ?? Number.NEGATIVE_INFINITY;
+
+        if (aCreatedAt !== bCreatedAt) {
+          return bCreatedAt - aCreatedAt;
+        }
+
+        return a.displayName.localeCompare(b.displayName);
+      });
+
+      return nextRows;
+    }
+
+    nextRows.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    return nextRows;
+  }, [filteredRows, sortMode]);
+
+  const cleanedSet = useMemo(() => new Set(cleanedIngredientIds), [cleanedIngredientIds]);
+
+  const toggleCleanedIngredient = (ingredientId: string) => {
+    setCleanedIngredientIds((current) => {
+      const next = current.includes(ingredientId)
+        ? current.filter((id) => id !== ingredientId)
+        : [...current, ingredientId];
+      writeLocalIdList(CLEANED_INGREDIENTS_STORAGE_KEY, next);
+      return next;
+    });
+  };
+
   return (
     <form
       action={formAction}
@@ -216,17 +283,40 @@ export function BaseIngredientsEditor({
           return;
         }
 
+        const submittedIngredientIds = computed.updates.map((update) => update.ingredientId);
+        if (submittedIngredientIds.length > 0) {
+          setCleanedIngredientIds((current) => {
+            const next = Array.from(new Set([...current, ...submittedIngredientIds]));
+            writeLocalIdList(CLEANED_INGREDIENTS_STORAGE_KEY, next);
+            return next;
+          });
+        }
+
         setClientError("");
       }}
     >
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <p className="text-sm text-slate-700">
-          Showing: <span className="font-semibold">{filteredRows.length}</span> of{" "}
+          Showing: <span className="font-semibold">{visibleRows.length}</span> of{" "}
           <span className="font-semibold">{rows.length}</span> | Pending changes:{" "}
-          <span className="font-semibold">{computed.updates.length}</span>
+          <span className="font-semibold">{computed.updates.length}</span> | Cleaned:{" "}
+          <span className="font-semibold">
+            {rows.filter((row) => cleanedSet.has(row.ingredientId)).length}
+          </span>
         </p>
 
         <div className="flex items-center gap-2">
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            Sort by
+            <select
+              value={sortMode}
+              onChange={(event) => setSortMode(event.target.value as IngredientSortMode)}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-slate-200 focus:ring"
+            >
+              <option value="recent">Recently added</option>
+              <option value="name">Name (A-Z)</option>
+            </select>
+          </label>
           <button
             type="button"
             onClick={() => setShowFilters((current) => !current)}
@@ -315,7 +405,7 @@ export function BaseIngredientsEditor({
       ) : null}
 
       <div className="space-y-3">
-        {filteredRows.map((row) => {
+        {visibleRows.map((row) => {
           const index = rows.findIndex((item) => item.ingredientId === row.ingredientId);
           if (index < 0) {
             return null;
@@ -323,6 +413,43 @@ export function BaseIngredientsEditor({
 
           return (
           <div key={row.ingredientId} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="space-y-1 text-xs text-slate-600">
+                <p>
+                Category:{" "}
+                <span className="font-medium text-slate-800">{row.category || "Uncategorized"}</span>{" "}
+                | Added: <span className="font-medium text-slate-800">{formatDate(row.createdAtMs)}</span>
+                </p>
+                <p>
+                  Nutrition per {row.nutritionPer100g.per || "100g"}:{" "}
+                  <span className="font-medium text-slate-800">
+                    Cal {formatMacro(row.nutritionPer100g.calories)}
+                  </span>{" "}
+                  |{" "}
+                  <span className="font-medium text-slate-800">
+                    Protein {formatMacro(row.nutritionPer100g.protein)}g
+                  </span>{" "}
+                  |{" "}
+                  <span className="font-medium text-slate-800">
+                    Fat {formatMacro(row.nutritionPer100g.fat)}g
+                  </span>{" "}
+                  |{" "}
+                  <span className="font-medium text-slate-800">
+                    Carbs {formatMacro(row.nutritionPer100g.carbs)}g
+                  </span>
+                </p>
+              </div>
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={cleanedSet.has(row.ingredientId)}
+                  onChange={() => toggleCleanedIngredient(row.ingredientId)}
+                  className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-300"
+                />
+                Cleaned
+              </label>
+            </div>
+
             <div className="mb-3 grid gap-3 lg:grid-cols-4">
               <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
                 Ingredient ID
@@ -370,10 +497,6 @@ export function BaseIngredientsEditor({
               </label>
             </div>
 
-            <p className="mb-3 text-xs text-slate-600">
-              Category: <span className="font-medium text-slate-800">{row.category || "Uncategorized"}</span>
-            </p>
-
             <label className="mb-3 flex flex-col gap-1 text-xs font-medium text-slate-700">
               Aliases (comma-separated)
               <input
@@ -420,7 +543,7 @@ export function BaseIngredientsEditor({
           );
         })}
 
-        {filteredRows.length === 0 ? (
+        {visibleRows.length === 0 ? (
           <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600">
             No ingredients match the selected filters.
           </div>

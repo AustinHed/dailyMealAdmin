@@ -5,6 +5,7 @@ import { Plus, Save, Trash2 } from "lucide-react";
 
 import { IngredientCard } from "@/components/IngredientCard";
 import type { Recipe, RecipeIngredient, RecipeInstruction } from "@/lib/firestore";
+import { readLocalIdList, writeLocalIdList } from "@/lib/local-id-storage";
 
 export type SaveRecipeFormState = {
   status: "idle" | "success" | "error";
@@ -17,11 +18,14 @@ type SaveRecipeAction = (
 ) => Promise<SaveRecipeFormState>;
 
 type RecipeEditorFormProps = {
+  recipeId: string;
   recipe: Recipe;
   saveRecipeAction: SaveRecipeAction;
   mode?: "full" | "ingredients";
   submitLabel?: string;
 };
+
+const CLEANED_RECIPES_STORAGE_KEY = "dailymeal.cleanedRecipes";
 
 function normalizeStringList(values: string[]): string[] {
   return values.map((value) => value.trim()).filter(Boolean);
@@ -113,6 +117,7 @@ function StringListEditor({
 }
 
 export function RecipeEditorForm({
+  recipeId,
   recipe,
   saveRecipeAction,
   mode = "full",
@@ -130,10 +135,34 @@ export function RecipeEditorForm({
   const [dietTypes, setDietTypes] = useState<string[]>(recipe.dietTypes);
   const [allergens, setAllergens] = useState<string[]>(recipe.allergens);
   const [tags, setTags] = useState<string[]>(recipe.tags);
+  const [isCleaned, setIsCleaned] = useState(() =>
+    readLocalIdList(CLEANED_RECIPES_STORAGE_KEY).includes(recipeId),
+  );
   const [instructions, setInstructions] = useState<RecipeInstruction[]>(
     recipe.instructions.length > 0 ? recipe.instructions : [{ text: "", tip: "" }],
   );
   const [ingredients, setIngredients] = useState<RecipeIngredient[]>(recipe.ingredients);
+
+  const markAsCleaned = () => {
+    const cleanedIds = readLocalIdList(CLEANED_RECIPES_STORAGE_KEY);
+    if (cleanedIds.includes(recipeId)) {
+      setIsCleaned(true);
+      return;
+    }
+
+    const nextIds = [...cleanedIds, recipeId];
+    writeLocalIdList(CLEANED_RECIPES_STORAGE_KEY, nextIds);
+    setIsCleaned(true);
+  };
+
+  const toggleCleaned = () => {
+    const cleanedIds = readLocalIdList(CLEANED_RECIPES_STORAGE_KEY);
+    const nextIds = cleanedIds.includes(recipeId)
+      ? cleanedIds.filter((id) => id !== recipeId)
+      : [...cleanedIds, recipeId];
+    writeLocalIdList(CLEANED_RECIPES_STORAGE_KEY, nextIds);
+    setIsCleaned(nextIds.includes(recipeId));
+  };
 
   const ingredientsSection = (
     <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -190,7 +219,13 @@ export function RecipeEditorForm({
   );
 
   return (
-    <form action={formAction} className="space-y-6">
+    <form
+      action={formAction}
+      className="space-y-6"
+      onSubmit={() => {
+        markAsCleaned();
+      }}
+    >
       {mode === "full" ? (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_minmax(360px,1fr)]">
           <div className="space-y-6">
@@ -393,6 +428,18 @@ export function RecipeEditorForm({
         >
           <Save className="h-4 w-4" />
           {isPending ? "Saving..." : submitLabel}
+        </button>
+
+        <button
+          type="button"
+          onClick={toggleCleaned}
+          className={`rounded-md border px-3 py-2 text-sm font-medium transition ${
+            isCleaned
+              ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+              : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+          }`}
+        >
+          {isCleaned ? "Cleaned" : "Mark Cleaned"}
         </button>
 
         {formState.message ? (
