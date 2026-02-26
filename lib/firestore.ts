@@ -4,11 +4,20 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase-admin";
 
+export type RecipeInstruction = {
+  text: string;
+  tip: string;
+};
+
 export type RecipeIngredient = {
   name: string;
   amount: string;
   unit: string;
   notes: string;
+  fdcId: string;
+  ingredientId: string;
+  unitType: string;
+  category: string;
 };
 
 export type Recipe = {
@@ -21,14 +30,22 @@ export type Recipe = {
   dietTypes: string[];
   allergens: string[];
   tags: string[];
-  instructions: string[];
+  instructions: RecipeInstruction[];
   ingredients: RecipeIngredient[];
+  imageUrl: string;
 };
 
 export type RecipeListItem = Pick<
   Recipe,
   "id" | "title" | "cuisine" | "servings" | "prepTimeMinutes"
 >;
+
+export type IngredientListItem = {
+  recipeId: string;
+  recipeTitle: string;
+  ingredientIndex: number;
+  ingredient: RecipeIngredient;
+};
 
 export type RecipeUpdateInput = Omit<Recipe, "id">;
 
@@ -60,7 +77,7 @@ function toStringArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function toInstructions(value: unknown): string[] {
+function toInstructions(value: unknown): RecipeInstruction[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -68,19 +85,20 @@ function toInstructions(value: unknown): string[] {
   return value
     .map((item) => {
       if (typeof item === "string") {
-        return item.trim();
+        return { text: item.trim(), tip: "" };
       }
 
       if (typeof item === "object" && item !== null) {
         const instruction = item as Record<string, unknown>;
-        if (typeof instruction.text === "string") {
-          return instruction.text.trim();
-        }
+        return {
+          text: toString(instruction.text),
+          tip: toString(instruction.tip),
+        };
       }
 
-      return "";
+      return { text: "", tip: "" };
     })
-    .filter(Boolean);
+    .filter((instruction) => instruction.text.length > 0);
 }
 
 function toIngredients(value: unknown): RecipeIngredient[] {
@@ -104,6 +122,14 @@ function toIngredients(value: unknown): RecipeIngredient[] {
         toString(item.preparation) ||
         toString(item.preparationFormat) ||
         toString(item.raw),
+      fdcId:
+        toString(item.fdcId) ||
+        toString(item.fdcid) ||
+        toString(item.fdcID) ||
+        toString(item.fdc_id),
+      ingredientId: toString(item.ingredientId),
+      unitType: toString(item.unitType),
+      category: toString(item.category),
     }))
     .filter((ingredient) => ingredient.name.length > 0);
 }
@@ -131,7 +157,55 @@ function normalizeRecipe(id: string, data: Record<string, unknown>): Recipe {
     tags: toStringArray(data.tags),
     instructions: toInstructions(data.instructions),
     ingredients: toIngredients(data.ingredients),
+    imageUrl: toString(data.imageUrl),
   };
+}
+
+function normalizeInstructionsForWrite(instructions: RecipeInstruction[]) {
+  return instructions
+    .map((instruction) => ({
+      text: instruction.text.trim(),
+      tip: instruction.tip.trim(),
+    }))
+    .filter((instruction) => instruction.text.length > 0)
+    .map((instruction, index) => ({
+      step: index + 1,
+      text: instruction.text,
+      tip: instruction.tip || null,
+    }));
+}
+
+function normalizeIngredientsForWrite(ingredients: RecipeIngredient[]) {
+  return ingredients
+    .map((ingredient) => ({
+      name: ingredient.name.trim(),
+      amount: ingredient.amount.trim(),
+      unit: ingredient.unit.trim(),
+      notes: ingredient.notes.trim(),
+      fdcId: ingredient.fdcId.trim(),
+      ingredientId: ingredient.ingredientId.trim(),
+      unitType: ingredient.unitType.trim(),
+      category: ingredient.category.trim(),
+    }))
+    .filter((ingredient) => ingredient.name.length > 0)
+    .map((ingredient) => {
+      const quantity = toNullableWriteNumber(ingredient.amount);
+
+      return {
+        ingredient: ingredient.name,
+        name: ingredient.name,
+        quantity,
+        quantityRaw: ingredient.amount || null,
+        amount: ingredient.amount || null,
+        unit: ingredient.unit || null,
+        preparation: ingredient.notes || null,
+        notes: ingredient.notes || null,
+        fdcId: ingredient.fdcId || null,
+        ingredientId: ingredient.ingredientId || null,
+        unitType: ingredient.unitType || null,
+        category: ingredient.category || null,
+      };
+    });
 }
 
 export async function getAllRecipes(): Promise<RecipeListItem[]> {
@@ -149,6 +223,29 @@ export async function getAllRecipes(): Promise<RecipeListItem[]> {
     .sort((a, b) => a.title.localeCompare(b.title));
 }
 
+export async function getAllIngredients(): Promise<IngredientListItem[]> {
+  const snapshot = await getAdminDb().collection("recipes").get();
+
+  return snapshot.docs
+    .map((doc) => normalizeRecipe(doc.id, doc.data()))
+    .flatMap((recipe) =>
+      recipe.ingredients.map((ingredient, ingredientIndex) => ({
+        recipeId: recipe.id,
+        recipeTitle: recipe.title,
+        ingredientIndex,
+        ingredient,
+      })),
+    )
+    .sort((a, b) => {
+      const recipeSort = a.recipeTitle.localeCompare(b.recipeTitle);
+      if (recipeSort !== 0) {
+        return recipeSort;
+      }
+
+      return a.ingredient.name.localeCompare(b.ingredient.name);
+    });
+}
+
 export async function getRecipeById(recipeId: string): Promise<Recipe | null> {
   const doc = await getAdminDb().collection("recipes").doc(recipeId).get();
 
@@ -163,42 +260,6 @@ export async function updateRecipe(
   recipeId: string,
   data: RecipeUpdateInput,
 ): Promise<void> {
-  const normalizedInstructions = data.instructions
-    .map((instruction) => instruction.trim())
-    .filter(Boolean);
-  const normalizedIngredients = data.ingredients
-    .map((ingredient) => ({
-      name: ingredient.name.trim(),
-      amount: ingredient.amount.trim(),
-      unit: ingredient.unit.trim(),
-      notes: ingredient.notes.trim(),
-    }))
-    .filter((ingredient) => ingredient.name.length > 0);
-
-  const instructionsForWrite = normalizedInstructions.map((text, index) => ({
-    step: index + 1,
-    text,
-    tip: null,
-  }));
-
-  const ingredientsForWrite = normalizedIngredients.map((ingredient) => {
-    const quantity = toNullableWriteNumber(ingredient.amount);
-
-    return {
-      ingredient: ingredient.name,
-      name: ingredient.name,
-      quantity,
-      quantityRaw: ingredient.amount || null,
-      amount: ingredient.amount,
-      unit: ingredient.unit || null,
-      preparation: ingredient.notes || null,
-      notes: ingredient.notes,
-      ingredientId: null,
-      unitType: null,
-      category: null,
-    };
-  });
-
   await getAdminDb().collection("recipes").doc(recipeId).set(
     {
       title: data.title.trim(),
@@ -209,8 +270,21 @@ export async function updateRecipe(
       dietTypes: data.dietTypes.map((item) => item.trim()).filter(Boolean),
       allergens: data.allergens.map((item) => item.trim()).filter(Boolean),
       tags: data.tags.map((item) => item.trim()).filter(Boolean),
-      instructions: instructionsForWrite,
-      ingredients: ingredientsForWrite,
+      instructions: normalizeInstructionsForWrite(data.instructions),
+      ingredients: normalizeIngredientsForWrite(data.ingredients),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
+export async function updateRecipeIngredients(
+  recipeId: string,
+  ingredients: RecipeIngredient[],
+): Promise<void> {
+  await getAdminDb().collection("recipes").doc(recipeId).set(
+    {
+      ingredients: normalizeIngredientsForWrite(ingredients),
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },

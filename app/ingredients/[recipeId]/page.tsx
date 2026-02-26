@@ -4,31 +4,9 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 
 import { RecipeEditorForm, type SaveRecipeFormState } from "@/components/RecipeEditorForm";
-import { getAllRecipes, getRecipeById, updateRecipe } from "@/lib/firestore";
+import { getAllRecipes, getRecipeById, updateRecipeIngredients } from "@/lib/firestore";
 
 export const dynamic = "force-dynamic";
-
-const optionalNumberSchema = z.preprocess(
-  (value) => {
-    if (typeof value !== "string") {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    const numericValue = Number(trimmed);
-    return Number.isFinite(numericValue) ? numericValue : Number.NaN;
-  },
-  z.number().int().min(0).nullable(),
-);
-
-const instructionSchema = z.object({
-  text: z.string().trim().min(1),
-  tip: z.string().trim().default(""),
-});
 
 const ingredientSchema = z.object({
   name: z.string().trim().min(1),
@@ -42,29 +20,8 @@ const ingredientSchema = z.object({
 });
 
 const formSchema = z.object({
-  title: z.string().trim().min(1, "Title is required."),
-  cuisine: z.string().trim(),
-  servings: optionalNumberSchema,
-  prepTimeMinutes: optionalNumberSchema,
-  cookTimeMinutes: optionalNumberSchema,
-  dietTypesJson: z.string(),
-  allergensJson: z.string(),
-  tagsJson: z.string(),
-  instructionsJson: z.string(),
   ingredientsJson: z.string(),
 });
-
-const stringArraySchema = z.array(z.string().trim().min(1));
-
-function parseStringArray(value: string) {
-  const parsedJson = JSON.parse(value) as unknown;
-  return stringArraySchema.parse(parsedJson);
-}
-
-function parseInstructions(value: string) {
-  const parsedJson = JSON.parse(value) as unknown;
-  return z.array(instructionSchema).parse(parsedJson);
-}
 
 function parseIngredients(value: string) {
   const parsedJson = JSON.parse(value) as unknown;
@@ -75,7 +32,7 @@ function getStringValue(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value : "";
 }
 
-export default async function RecipeDetailPage({
+export default async function IngredientsEditorPage({
   params,
 }: {
   params: Promise<{ recipeId: string }>;
@@ -87,7 +44,6 @@ export default async function RecipeDetailPage({
   if (!recipe) {
     notFound();
   }
-  const currentRecipe = recipe;
 
   const currentIndex = recipes.findIndex((item) => item.id === recipeId);
   const nextRecipe =
@@ -95,66 +51,40 @@ export default async function RecipeDetailPage({
       ? recipes[(currentIndex + 1) % recipes.length]
       : null;
 
-  async function saveRecipeAction(
+  async function saveIngredientsAction(
     _previousState: SaveRecipeFormState,
     formData: FormData,
   ): Promise<SaveRecipeFormState> {
     "use server";
 
     const parsedForm = formSchema.safeParse({
-      title: getStringValue(formData.get("title")),
-      cuisine: getStringValue(formData.get("cuisine")),
-      servings: getStringValue(formData.get("servings")),
-      prepTimeMinutes: getStringValue(formData.get("prepTimeMinutes")),
-      cookTimeMinutes: getStringValue(formData.get("cookTimeMinutes")),
-      dietTypesJson: getStringValue(formData.get("dietTypesJson")),
-      allergensJson: getStringValue(formData.get("allergensJson")),
-      tagsJson: getStringValue(formData.get("tagsJson")),
-      instructionsJson: getStringValue(formData.get("instructionsJson")),
       ingredientsJson: getStringValue(formData.get("ingredientsJson")),
     });
 
     if (!parsedForm.success) {
       return {
         status: "error",
-        message: "Please check the form values and try again.",
+        message: "Please check ingredient values and try again.",
       };
     }
 
     try {
-      const dietTypes = parseStringArray(parsedForm.data.dietTypesJson);
-      const allergens = parseStringArray(parsedForm.data.allergensJson);
-      const tags = parseStringArray(parsedForm.data.tagsJson);
-      const instructions = parseInstructions(parsedForm.data.instructionsJson);
       const ingredients = parseIngredients(parsedForm.data.ingredientsJson);
+      await updateRecipeIngredients(recipeId, ingredients);
 
-      await updateRecipe(recipeId, {
-        title: parsedForm.data.title,
-        cuisine: parsedForm.data.cuisine,
-        servings: parsedForm.data.servings,
-        prepTimeMinutes: parsedForm.data.prepTimeMinutes,
-        cookTimeMinutes: parsedForm.data.cookTimeMinutes,
-        dietTypes,
-        allergens,
-        tags,
-        instructions,
-        ingredients,
-        imageUrl: currentRecipe.imageUrl,
-      });
-
-      revalidatePath("/recipes");
       revalidatePath("/ingredients");
-      revalidatePath(`/recipes/${recipeId}`);
       revalidatePath(`/ingredients/${recipeId}`);
+      revalidatePath("/recipes");
+      revalidatePath(`/recipes/${recipeId}`);
 
       return {
         status: "success",
-        message: "Recipe saved.",
+        message: "Ingredients saved.",
       };
     } catch {
       return {
         status: "error",
-        message: "Could not save recipe. Check array fields and try again.",
+        message: "Could not save ingredients.",
       };
     }
   }
@@ -176,27 +106,27 @@ export default async function RecipeDetailPage({
           )}
 
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">{recipe.title || "Edit Recipe"}</h1>
-            <p className="text-sm text-slate-600">ID: {recipe.id}</p>
+            <h1 className="text-2xl font-bold text-slate-900">{recipe.title}</h1>
+            <p className="text-sm text-slate-600">Ingredient-only editor</p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <Link
-            href="/recipes"
+            href="/ingredients"
             className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
-            Back to Recipes
+            Back to Ingredient Review
           </Link>
           <Link
-            href={`/ingredients/${recipe.id}`}
+            href={`/recipes/${recipe.id}`}
             className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
-            Ingredients View
+            Full Recipe Editor
           </Link>
           {nextRecipe ? (
             <Link
-              href={`/recipes/${nextRecipe.id}`}
+              href={`/ingredients/${nextRecipe.id}`}
               className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
             >
               Next Recipe
@@ -205,7 +135,12 @@ export default async function RecipeDetailPage({
         </div>
       </div>
 
-      <RecipeEditorForm recipe={recipe} saveRecipeAction={saveRecipeAction} mode="full" />
+      <RecipeEditorForm
+        recipe={recipe}
+        saveRecipeAction={saveIngredientsAction}
+        mode="ingredients"
+        submitLabel="Save Ingredients"
+      />
     </main>
   );
 }

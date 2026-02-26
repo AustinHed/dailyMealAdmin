@@ -38,8 +38,8 @@ export function IngredientCard({
         </button>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <label className="flex flex-col gap-1 text-xs font-medium text-slate-700 sm:col-span-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1 text-xs font-medium text-slate-700 sm:col-span-2">
           Name
           <input
             type="text"
@@ -72,7 +72,18 @@ export function IngredientCard({
           />
         </label>
 
-        <label className="flex flex-col gap-1 text-xs font-medium text-slate-700">
+        <label className="flex flex-col gap-1 text-xs font-medium text-slate-700 sm:col-span-2">
+          FDCID
+          <input
+            type="text"
+            value={ingredient.fdcId}
+            onChange={(event) => updateField("fdcId", event.target.value)}
+            className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-slate-200 placeholder:text-slate-400 focus:ring"
+            placeholder="USDA FoodData Central ID"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1 text-xs font-medium text-slate-700 sm:col-span-2">
           Notes
           <input
             type="text"
