@@ -60,6 +60,29 @@ function toStringArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function toInstructions(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      if (typeof item === "string") {
+        return item.trim();
+      }
+
+      if (typeof item === "object" && item !== null) {
+        const instruction = item as Record<string, unknown>;
+        if (typeof instruction.text === "string") {
+          return instruction.text.trim();
+        }
+      }
+
+      return "";
+    })
+    .filter(Boolean);
+}
+
 function toIngredients(value: unknown): RecipeIngredient[] {
   if (!Array.isArray(value)) {
     return [];
@@ -68,12 +91,31 @@ function toIngredients(value: unknown): RecipeIngredient[] {
   return value
     .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
     .map((item) => ({
-      name: toString(item.name),
-      amount: toString(item.amount),
+      name: toString(item.name) || toString(item.ingredient),
+      amount:
+        toString(item.amount) ||
+        (typeof item.quantity === "number" && Number.isFinite(item.quantity)
+          ? String(item.quantity)
+          : toString(item.quantity)) ||
+        toString(item.quantityRaw),
       unit: toString(item.unit),
-      notes: toString(item.notes),
+      notes:
+        toString(item.notes) ||
+        toString(item.preparation) ||
+        toString(item.preparationFormat) ||
+        toString(item.raw),
     }))
     .filter((ingredient) => ingredient.name.length > 0);
+}
+
+function toNullableWriteNumber(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function normalizeRecipe(id: string, data: Record<string, unknown>): Recipe {
@@ -87,7 +129,7 @@ function normalizeRecipe(id: string, data: Record<string, unknown>): Recipe {
     dietTypes: toStringArray(data.dietTypes),
     allergens: toStringArray(data.allergens),
     tags: toStringArray(data.tags),
-    instructions: toStringArray(data.instructions),
+    instructions: toInstructions(data.instructions),
     ingredients: toIngredients(data.ingredients),
   };
 }
@@ -121,9 +163,54 @@ export async function updateRecipe(
   recipeId: string,
   data: RecipeUpdateInput,
 ): Promise<void> {
+  const normalizedInstructions = data.instructions
+    .map((instruction) => instruction.trim())
+    .filter(Boolean);
+  const normalizedIngredients = data.ingredients
+    .map((ingredient) => ({
+      name: ingredient.name.trim(),
+      amount: ingredient.amount.trim(),
+      unit: ingredient.unit.trim(),
+      notes: ingredient.notes.trim(),
+    }))
+    .filter((ingredient) => ingredient.name.length > 0);
+
+  const instructionsForWrite = normalizedInstructions.map((text, index) => ({
+    step: index + 1,
+    text,
+    tip: null,
+  }));
+
+  const ingredientsForWrite = normalizedIngredients.map((ingredient) => {
+    const quantity = toNullableWriteNumber(ingredient.amount);
+
+    return {
+      ingredient: ingredient.name,
+      name: ingredient.name,
+      quantity,
+      quantityRaw: ingredient.amount || null,
+      amount: ingredient.amount,
+      unit: ingredient.unit || null,
+      preparation: ingredient.notes || null,
+      notes: ingredient.notes,
+      ingredientId: null,
+      unitType: null,
+      category: null,
+    };
+  });
+
   await getAdminDb().collection("recipes").doc(recipeId).set(
     {
-      ...data,
+      title: data.title.trim(),
+      cuisine: data.cuisine.trim(),
+      servings: data.servings,
+      prepTimeMinutes: data.prepTimeMinutes,
+      cookTimeMinutes: data.cookTimeMinutes,
+      dietTypes: data.dietTypes.map((item) => item.trim()).filter(Boolean),
+      allergens: data.allergens.map((item) => item.trim()).filter(Boolean),
+      tags: data.tags.map((item) => item.trim()).filter(Boolean),
+      instructions: instructionsForWrite,
+      ingredients: ingredientsForWrite,
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },
