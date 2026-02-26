@@ -21,6 +21,23 @@ function checkVar(name: string) {
 }
 
 export async function GET() {
+  const envKeys = Object.keys(process.env);
+  const firebaseRelatedKeys = envKeys
+    .filter((key) => key.toUpperCase().includes("FIREBASE"))
+    .sort();
+
+  const firebaseRelatedKeyDiagnostics = firebaseRelatedKeys.map((key) => {
+    const value = process.env[key] ?? "";
+    const trimmedKey = key.trim();
+
+    return {
+      key,
+      trimmedKey,
+      hasLeadingOrTrailingWhitespace: key !== trimmedKey,
+      valueLength: value.length,
+    };
+  });
+
   const projectId = readVar("FIREBASE_PROJECT_ID");
   const clientEmail = readVar("FIREBASE_CLIENT_EMAIL");
   const privateKey = readVar("FIREBASE_PRIVATE_KEY");
@@ -53,9 +70,15 @@ export async function GET() {
         quotedSinglePrivateKey: isPresent("'FIREBASE_PRIVATE_KEY'"),
         lowercasePrivateKey: isPresent("firebase_private_key"),
       },
+      firebaseRelatedKeys,
+      firebaseRelatedKeyDiagnostics,
       runtimeInfo: {
         nodeEnv: process.env.NODE_ENV ?? null,
         vercelEnv: process.env.VERCEL_ENV ?? null,
+        vercelUrl: process.env.VERCEL_URL ?? null,
+        vercelProjectProductionUrl:
+          process.env.VERCEL_PROJECT_PRODUCTION_URL ?? null,
+        vercelGitRepoSlug: process.env.VERCEL_GIT_REPO_SLUG ?? null,
       },
       note: "Temporary debug endpoint. Remove after env verification.",
       checkedAt: new Date().toISOString(),
