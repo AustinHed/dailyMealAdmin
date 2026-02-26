@@ -40,11 +40,21 @@ export type RecipeListItem = Pick<
   "id" | "title" | "cuisine" | "servings" | "prepTimeMinutes"
 >;
 
-export type IngredientListItem = {
-  recipeId: string;
-  recipeTitle: string;
-  ingredientIndex: number;
-  ingredient: RecipeIngredient;
+export type BaseIngredient = {
+  ingredientId: string;
+  displayName: string;
+  usdaFdcId: string;
+  aliases: string[];
+  conversion: Record<string, unknown>;
+  category: string;
+};
+
+export type BaseIngredientUpdateInput = {
+  ingredientId: string;
+  displayName: string;
+  usdaFdcId: string;
+  aliases: string[];
+  conversion: Record<string, unknown>;
 };
 
 export type RecipeUpdateInput = Omit<Recipe, "id">;
@@ -75,6 +85,24 @@ function toStringArray(value: unknown): string[] {
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function toFdcIdString(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  return "";
 }
 
 function toInstructions(value: unknown): RecipeInstruction[] {
@@ -161,6 +189,49 @@ function normalizeRecipe(id: string, data: Record<string, unknown>): Recipe {
   };
 }
 
+function normalizeBaseIngredient(id: string, data: Record<string, unknown>): BaseIngredient {
+  const ingredientId = toString(data.ingredientId) || id;
+
+  return {
+    ingredientId,
+    displayName: toString(data.displayName) || toString(data.name) || ingredientId,
+    usdaFdcId:
+      toFdcIdString(data.usdaFdcId) ||
+      toFdcIdString(data.fdcId) ||
+      toFdcIdString(data.fdcid) ||
+      toFdcIdString(data.fdcID) ||
+      toFdcIdString(data.fdc_id),
+    aliases: toStringArray(data.aliases),
+    conversion: toRecord(data.conversion),
+    category: toString(data.category),
+  };
+}
+
+async function getBaseIngredientLookupByIds(
+  ingredientIds: string[],
+): Promise<Map<string, BaseIngredient>> {
+  const uniqueIds = Array.from(new Set(ingredientIds.map((id) => id.trim()).filter(Boolean)));
+  const lookup = new Map<string, BaseIngredient>();
+
+  if (uniqueIds.length === 0) {
+    return lookup;
+  }
+
+  const refs = uniqueIds.map((id) => getAdminDb().collection("ingredients").doc(id));
+  const docs = await getAdminDb().getAll(...refs);
+
+  for (const doc of docs) {
+    if (!doc.exists) {
+      continue;
+    }
+
+    const normalized = normalizeBaseIngredient(doc.id, doc.data() ?? {});
+    lookup.set(normalized.ingredientId, normalized);
+  }
+
+  return lookup;
+}
+
 function normalizeInstructionsForWrite(instructions: RecipeInstruction[]) {
   return instructions
     .map((instruction) => ({
@@ -208,6 +279,21 @@ function normalizeIngredientsForWrite(ingredients: RecipeIngredient[]) {
     });
 }
 
+function parseFdcIdForWrite(value: string): string | number | null {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+
+  return trimmed;
+}
+
 export async function getAllRecipes(): Promise<RecipeListItem[]> {
   const snapshot = await getAdminDb().collection("recipes").get();
 
@@ -223,27 +309,12 @@ export async function getAllRecipes(): Promise<RecipeListItem[]> {
     .sort((a, b) => a.title.localeCompare(b.title));
 }
 
-export async function getAllIngredients(): Promise<IngredientListItem[]> {
-  const snapshot = await getAdminDb().collection("recipes").get();
+export async function getAllBaseIngredients(): Promise<BaseIngredient[]> {
+  const snapshot = await getAdminDb().collection("ingredients").get();
 
   return snapshot.docs
-    .map((doc) => normalizeRecipe(doc.id, doc.data()))
-    .flatMap((recipe) =>
-      recipe.ingredients.map((ingredient, ingredientIndex) => ({
-        recipeId: recipe.id,
-        recipeTitle: recipe.title,
-        ingredientIndex,
-        ingredient,
-      })),
-    )
-    .sort((a, b) => {
-      const recipeSort = a.recipeTitle.localeCompare(b.recipeTitle);
-      if (recipeSort !== 0) {
-        return recipeSort;
-      }
-
-      return a.ingredient.name.localeCompare(b.ingredient.name);
-    });
+    .map((doc) => normalizeBaseIngredient(doc.id, doc.data()))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
 export async function getRecipeById(recipeId: string): Promise<Recipe | null> {
@@ -253,7 +324,26 @@ export async function getRecipeById(recipeId: string): Promise<Recipe | null> {
     return null;
   }
 
-  return normalizeRecipe(doc.id, doc.data() ?? {});
+  const recipe = normalizeRecipe(doc.id, doc.data() ?? {});
+  const ingredientLookup = await getBaseIngredientLookupByIds(
+    recipe.ingredients.map((ingredient) => ingredient.ingredientId),
+  );
+
+  recipe.ingredients = recipe.ingredients.map((ingredient) => {
+    const baseIngredient = ingredientLookup.get(ingredient.ingredientId);
+
+    if (!baseIngredient) {
+      return ingredient;
+    }
+
+    return {
+      ...ingredient,
+      name: ingredient.name || baseIngredient.displayName,
+      fdcId: baseIngredient.usdaFdcId || ingredient.fdcId,
+    };
+  });
+
+  return recipe;
 }
 
 export async function updateRecipe(
@@ -289,4 +379,46 @@ export async function updateRecipeIngredients(
     },
     { merge: true },
   );
+}
+
+export async function updateBaseIngredients(
+  updates: BaseIngredientUpdateInput[],
+): Promise<void> {
+  if (updates.length === 0) {
+    return;
+  }
+
+  const db = getAdminDb();
+  const chunkSize = 400;
+
+  for (let index = 0; index < updates.length; index += chunkSize) {
+    const batch = db.batch();
+    const chunk = updates.slice(index, index + chunkSize);
+
+    for (const update of chunk) {
+      const ingredientId = update.ingredientId.trim();
+      if (!ingredientId) {
+        continue;
+      }
+
+      const aliases = Array.from(
+        new Set(update.aliases.map((alias) => alias.trim()).filter(Boolean)),
+      );
+
+      batch.set(
+        db.collection("ingredients").doc(ingredientId),
+        {
+          ingredientId,
+          displayName: update.displayName.trim() || ingredientId,
+          usdaFdcId: parseFdcIdForWrite(update.usdaFdcId),
+          aliases,
+          conversion: toRecord(update.conversion),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
+
+    await batch.commit();
+  }
 }

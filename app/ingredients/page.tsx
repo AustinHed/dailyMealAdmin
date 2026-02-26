@@ -1,90 +1,107 @@
 import Link from "next/link";
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
 
-import { getAllIngredients } from "@/lib/firestore";
+import {
+  BaseIngredientsEditor,
+  type SaveBaseIngredientsState,
+} from "@/components/BaseIngredientsEditor";
+import { getAllBaseIngredients, updateBaseIngredients } from "@/lib/firestore";
 
 export const dynamic = "force-dynamic";
 
+const formSchema = z.object({
+  updatesJson: z.string(),
+});
+
+const updateSchema = z.object({
+  ingredientId: z.string().trim().min(1),
+  displayName: z.string().trim().min(1),
+  usdaFdcId: z.string().trim().default(""),
+  aliases: z.array(z.string().trim().min(1)).default([]),
+  conversion: z.record(z.string(), z.unknown()),
+});
+
+function parseUpdates(value: string) {
+  const parsed = JSON.parse(value) as unknown;
+  return z.array(updateSchema).parse(parsed);
+}
+
+function getStringValue(value: FormDataEntryValue | null): string {
+  return typeof value === "string" ? value : "";
+}
+
 export default async function IngredientsPage() {
-  const ingredients = await getAllIngredients();
+  const ingredients = await getAllBaseIngredients();
+
+  async function saveBaseIngredientsAction(
+    _previousState: SaveBaseIngredientsState,
+    formData: FormData,
+  ): Promise<SaveBaseIngredientsState> {
+    "use server";
+
+    const parsedForm = formSchema.safeParse({
+      updatesJson: getStringValue(formData.get("updatesJson")),
+    });
+
+    if (!parsedForm.success) {
+      return {
+        status: "error",
+        message: "Invalid request payload.",
+      };
+    }
+
+    try {
+      const updates = parseUpdates(parsedForm.data.updatesJson);
+
+      if (updates.length === 0) {
+        return {
+          status: "success",
+          message: "No ingredient changes detected.",
+        };
+      }
+
+      await updateBaseIngredients(updates);
+
+      revalidatePath("/ingredients");
+      revalidatePath("/recipes");
+
+      return {
+        status: "success",
+        message: `Saved ${updates.length} ingredient update${updates.length === 1 ? "" : "s"}.`,
+      };
+    } catch {
+      return {
+        status: "error",
+        message: "Could not save base ingredients. Check conversion JSON and try again.",
+      };
+    }
+  }
 
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6 flex items-center justify-between gap-3">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Ingredient Review</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Base Ingredients</h1>
           <p className="text-sm text-slate-600">
-            Browse ingredients across all recipes and jump directly into edits.
+            Edit canonical ingredient names, FDCIDs, aliases, and conversion data.
           </p>
         </div>
-        <Link
-          href="/recipes"
-          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-        >
-          Back to Recipes
-        </Link>
+
+        <div className="flex items-center gap-2">
+          <Link
+            href="/recipes"
+            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Back to Recipes
+          </Link>
+        </div>
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <table className="w-full border-collapse">
-          <thead className="bg-slate-100">
-            <tr>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Recipe
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Ingredient
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                FDCID
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Amount
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Unit
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {ingredients.length === 0 ? (
-              <tr>
-                <td className="px-4 py-6 text-sm text-slate-500" colSpan={6}>
-                  No ingredients found.
-                </td>
-              </tr>
-            ) : (
-              ingredients.map((item) => (
-                <tr key={`${item.recipeId}-${item.ingredientIndex}`} className="border-t border-slate-200">
-                  <td className="px-4 py-3 text-sm font-medium text-slate-900">{item.recipeTitle}</td>
-                  <td className="px-4 py-3 text-sm text-slate-700">{item.ingredient.name}</td>
-                  <td className="px-4 py-3 text-sm text-slate-600">{item.ingredient.fdcId || "-"}</td>
-                  <td className="px-4 py-3 text-sm text-slate-600">{item.ingredient.amount || "-"}</td>
-                  <td className="px-4 py-3 text-sm text-slate-600">{item.ingredient.unit || "-"}</td>
-                  <td className="px-4 py-3 text-sm text-slate-600">
-                    <div className="flex items-center gap-2">
-                      <Link
-                        href={`/ingredients/${item.recipeId}`}
-                        className="rounded border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                      >
-                        Edit Ingredients
-                      </Link>
-                      <Link
-                        href={`/recipes/${item.recipeId}`}
-                        className="rounded border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                      >
-                        Full Recipe
-                      </Link>
-                    </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      <BaseIngredientsEditor
+        ingredients={ingredients}
+        saveBaseIngredientsAction={saveBaseIngredientsAction}
+      />
     </main>
   );
 }

@@ -189,10 +189,16 @@ export default async function RecipeDetailPage({
             Back to Recipes
           </Link>
           <Link
+            href="/ingredients"
+            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Base Ingredients
+          </Link>
+          <Link
             href={`/ingredients/${recipe.id}`}
             className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
-            Ingredients View
+            Recipe Ingredients
           </Link>
           {nextRecipe ? (
             <Link

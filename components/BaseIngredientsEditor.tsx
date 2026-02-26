@@ -1,0 +1,306 @@
+"use client";
+
+import { useActionState, useMemo, useState } from "react";
+import { Save } from "lucide-react";
+
+import type { BaseIngredient } from "@/lib/firestore";
+
+export type SaveBaseIngredientsState = {
+  status: "idle" | "success" | "error";
+  message: string;
+};
+
+type SaveBaseIngredientsAction = (
+  previousState: SaveBaseIngredientsState,
+  formData: FormData,
+) => Promise<SaveBaseIngredientsState>;
+
+type BaseIngredientsEditorProps = {
+  ingredients: BaseIngredient[];
+  saveBaseIngredientsAction: SaveBaseIngredientsAction;
+};
+
+type EditableIngredientRow = {
+  ingredientId: string;
+  displayName: string;
+  usdaFdcId: string;
+  aliasesText: string;
+  conversionText: string;
+};
+
+type UpdatePayload = {
+  ingredientId: string;
+  displayName: string;
+  usdaFdcId: string;
+  aliases: string[];
+  conversion: Record<string, unknown>;
+};
+
+type ComputeResult = {
+  updates: UpdatePayload[];
+  errors: Record<string, string>;
+};
+
+function normalizeAliasesInput(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function prettyJson(value: Record<string, unknown>): string {
+  return JSON.stringify(value, null, 2);
+}
+
+function safeParseObjectJson(text: string): {
+  value: Record<string, unknown>;
+  error: string | null;
+} {
+  const trimmed = text.trim();
+
+  if (!trimmed) {
+    return { value: {}, error: null };
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return { value: parsed as Record<string, unknown>, error: null };
+    }
+
+    return { value: {}, error: "Conversion JSON must be an object." };
+  } catch {
+    return { value: {}, error: "Invalid conversion JSON." };
+  }
+}
+
+export function BaseIngredientsEditor({
+  ingredients,
+  saveBaseIngredientsAction,
+}: BaseIngredientsEditorProps) {
+  const initialState: SaveBaseIngredientsState = {
+    status: "idle",
+    message: "",
+  };
+
+  const [formState, formAction, isPending] = useActionState<
+    SaveBaseIngredientsState,
+    FormData
+  >(saveBaseIngredientsAction, initialState);
+  const [clientError, setClientError] = useState("");
+
+  const [rows, setRows] = useState<EditableIngredientRow[]>(() =>
+    ingredients.map((ingredient) => ({
+      ingredientId: ingredient.ingredientId,
+      displayName: ingredient.displayName,
+      usdaFdcId: ingredient.usdaFdcId,
+      aliasesText: ingredient.aliases.join(", "),
+      conversionText: prettyJson(ingredient.conversion),
+    })),
+  );
+
+  const initialLookup = useMemo(() => {
+    const lookup = new Map<
+      string,
+      {
+        displayName: string;
+        usdaFdcId: string;
+        aliases: string[];
+        conversionSerialized: string;
+      }
+    >();
+
+    for (const ingredient of ingredients) {
+      lookup.set(ingredient.ingredientId, {
+        displayName: ingredient.displayName,
+        usdaFdcId: ingredient.usdaFdcId,
+        aliases: ingredient.aliases,
+        conversionSerialized: JSON.stringify(ingredient.conversion),
+      });
+    }
+
+    return lookup;
+  }, [ingredients]);
+
+  const computed = useMemo<ComputeResult>(() => {
+    const updates: UpdatePayload[] = [];
+    const errors: Record<string, string> = {};
+
+    for (const row of rows) {
+      const initial = initialLookup.get(row.ingredientId);
+      if (!initial) {
+        continue;
+      }
+
+      const parsedConversion = safeParseObjectJson(row.conversionText);
+      if (parsedConversion.error) {
+        errors[row.ingredientId] = parsedConversion.error;
+        continue;
+      }
+
+      const displayName = row.displayName.trim();
+      const usdaFdcId = row.usdaFdcId.trim();
+      const aliases = normalizeAliasesInput(row.aliasesText);
+      const conversionSerialized = JSON.stringify(parsedConversion.value);
+
+      const hasChanges =
+        displayName !== initial.displayName ||
+        usdaFdcId !== initial.usdaFdcId ||
+        aliases.join("|") !== initial.aliases.join("|") ||
+        conversionSerialized !== initial.conversionSerialized;
+
+      if (hasChanges) {
+        updates.push({
+          ingredientId: row.ingredientId,
+          displayName,
+          usdaFdcId,
+          aliases,
+          conversion: parsedConversion.value,
+        });
+      }
+    }
+
+    return { updates, errors };
+  }, [initialLookup, rows]);
+
+  return (
+    <form
+      action={formAction}
+      className="space-y-4"
+      onSubmit={(event) => {
+        if (Object.keys(computed.errors).length > 0) {
+          event.preventDefault();
+          setClientError("Fix invalid conversion JSON before saving.");
+          return;
+        }
+
+        setClientError("");
+      }}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <p className="text-sm text-slate-700">
+          Total ingredients: <span className="font-semibold">{rows.length}</span> | Pending changes:{" "}
+          <span className="font-semibold">{computed.updates.length}</span>
+        </p>
+
+        <button
+          type="submit"
+          disabled={isPending || computed.updates.length === 0}
+          className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Save className="h-4 w-4" />
+          {isPending ? "Saving..." : "Save Ingredient Changes"}
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        {rows.map((row, index) => (
+          <div key={row.ingredientId} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 grid gap-3 lg:grid-cols-4">
+              <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                Ingredient ID
+                <input
+                  type="text"
+                  value={row.ingredientId}
+                  readOnly
+                  className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-700"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1 text-xs font-medium text-slate-700 lg:col-span-2">
+                Base Name
+                <input
+                  type="text"
+                  value={row.displayName}
+                  onChange={(event) => {
+                    const nextRows = [...rows];
+                    nextRows[index] = {
+                      ...nextRows[index],
+                      displayName: event.target.value,
+                    };
+                    setRows(nextRows);
+                  }}
+                  className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-slate-200 placeholder:text-slate-400 focus:ring"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1 text-xs font-medium text-slate-700">
+                FDCID
+                <input
+                  type="text"
+                  value={row.usdaFdcId}
+                  onChange={(event) => {
+                    const nextRows = [...rows];
+                    nextRows[index] = {
+                      ...nextRows[index],
+                      usdaFdcId: event.target.value,
+                    };
+                    setRows(nextRows);
+                  }}
+                  className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-slate-200 placeholder:text-slate-400 focus:ring"
+                  placeholder="USDA FoodData Central ID"
+                />
+              </label>
+            </div>
+
+            <label className="mb-3 flex flex-col gap-1 text-xs font-medium text-slate-700">
+              Aliases (comma-separated)
+              <input
+                type="text"
+                value={row.aliasesText}
+                onChange={(event) => {
+                  const nextRows = [...rows];
+                  nextRows[index] = {
+                    ...nextRows[index],
+                    aliasesText: event.target.value,
+                  };
+                  setRows(nextRows);
+                }}
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none ring-slate-200 placeholder:text-slate-400 focus:ring"
+                placeholder="alias one, alias two"
+              />
+            </label>
+
+            <details className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold text-slate-700">
+                Edit conversions (JSON)
+              </summary>
+              <div className="mt-2">
+                <textarea
+                  value={row.conversionText}
+                  onChange={(event) => {
+                    const nextRows = [...rows];
+                    nextRows[index] = {
+                      ...nextRows[index],
+                      conversionText: event.target.value,
+                    };
+                    setRows(nextRows);
+                  }}
+                  rows={10}
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 outline-none ring-slate-200 placeholder:text-slate-400 focus:ring"
+                />
+              </div>
+            </details>
+
+            {computed.errors[row.ingredientId] ? (
+              <p className="mt-2 text-xs font-medium text-red-600">{computed.errors[row.ingredientId]}</p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+
+      <input type="hidden" name="updatesJson" value={JSON.stringify(computed.updates)} />
+
+      {clientError ? <p className="text-sm text-red-600">{clientError}</p> : null}
+      {formState.message ? (
+        <p className={`text-sm ${formState.status === "error" ? "text-red-600" : "text-emerald-600"}`}>
+          {formState.message}
+        </p>
+      ) : null}
+    </form>
+  );
+}
